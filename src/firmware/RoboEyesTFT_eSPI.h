@@ -15,14 +15,16 @@
 #define ON  1
 #define OFF 0
 
-#define N   1
-#define NE  2
-#define E   3
-#define SE  4
-#define S   5
-#define SW  6
-#define W   7
-#define NW  8
+// 방향 매크로 (mbedtls와의 충돌 방지를 위해 EYE_DIR_ 접두사 사용)
+// HTTPClient가 mbedtls를 포함하므로 단일 문자 매크로는 사용하지 않음
+#define EYE_DIR_N   1
+#define EYE_DIR_NE  2
+#define EYE_DIR_E   3
+#define EYE_DIR_SE  4
+#define EYE_DIR_S   5
+#define EYE_DIR_SW  6
+#define EYE_DIR_W   7
+#define EYE_DIR_NW  8
 
 class TFT_RoboEyes {
   public:

@@ -7,6 +7,7 @@
 #include "ButtonHandler.h"
 #include "DeviceID.h"
 #include "RoboEyesTFT_eSPI.h"
+#include "SensorManager.h"
 
 WiFiManager wifiManager;
 TFT_eSPI tft = TFT_eSPI();
@@ -16,6 +17,10 @@ TFT_RoboEyes roboEyes(tft, false, 3);  // landscape, rotation 3 (TFT-LCD.ino와 
 WifiState currentState = WIFI_CONNECTING;
 WifiState lastDisplayedState = WIFI_ERROR;
 bool bootButtonPressed = false;
+
+// 센서 관리자
+const char* SENSOR_SERVER_URL = "https://2542c3beade0.ngrok-free.app/sensor/data";
+SensorManager sensorManager(SENSOR_SERVER_URL, &deviceID);
 
 // 설정 포털 타임아웃 (초)
 const int CONFIG_PORTAL_TIMEOUT = 300;  // 5분
@@ -34,6 +39,9 @@ void setup() {
   initLCD();
   printLCD(10, 100, "Initializing...", TFT_WHITE, 2);
   delay(500);
+
+  // 센서 모듈 초기화
+  sensorManager.init();
 
   // GPIO 0 (BOOT 버튼) 설정
   pinMode(0, INPUT_PULLUP);
@@ -72,6 +80,11 @@ void setup() {
     // WiFi 연결 성공
     currentState = WIFI_CONNECTED;
     displayConnected();
+    
+    // 센서 데이터 업로드 타이머 시작 (10초마다)
+    if (sensorManager.isInitialized()) {
+      sensorManager.startUploadTimer();
+    }
   }
 }
 
@@ -108,6 +121,9 @@ void loop() {
       }
     }
   }
+
+  // 센서 데이터 업로드 처리 (타이머 인터럽트에서 설정된 플래그 확인)
+  sensorManager.processUpload();
 
   delay(10);  // CPU 부하 감소
 }

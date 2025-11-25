@@ -1,0 +1,127 @@
+#include "SensorManager.h"
+
+// 정적 멤버 변수 (인스턴스 포인터 저장용)
+static SensorManager* sensorManagerInstance = nullptr;
+
+SensorManager::SensorManager(const char* url, DeviceID* deviceId)
+  : sht31(Adafruit_SHT31()),
+    sensorInitialized(false),
+    lastTemperature(0.0),
+    lastHumidity(0.0),
+    serverURL(url),
+    shouldUploadSensorData(false),
+    sensorUploadTimer(NULL),
+    deviceID(deviceId)
+{
+  sensorManagerInstance = this;
+}
+
+SensorManager::~SensorManager() {
+  stopUploadTimer();
+  sensorManagerInstance = nullptr;
+}
+
+bool SensorManager::init() {
+  Wire.begin(SHT31_SDA_PIN, SHT31_SCL_PIN);
+  delay(100);  // I2C 안정화 대기
+  sensorInitialized = sht31.begin(0x44);
+  
+  if (sensorInitialized) {
+    // 초기 센서 읽기
+    readData();
+  }
+  
+  return sensorInitialized;
+}
+
+bool SensorManager::readData() {
+  if (!sensorInitialized) {
+    return false;
+  }
+  
+  float temperature = sht31.readTemperature();
+  float humidity = sht31.readHumidity();
+  
+  if (!isnan(temperature) && !isnan(humidity)) {
+    lastTemperature = temperature;
+    lastHumidity = humidity;
+    return true;
+  }
+  
+  return false;
+}
+
+void SensorManager::startUploadTimer() {
+  if (sensorUploadTimer != NULL) {
+    return;  // 이미 시작됨
+  }
+  
+  const esp_timer_create_args_t timer_args = {
+    .callback = &SensorManager::timerCallback,
+    .name = "sensor_upload_timer"
+  };
+  
+  esp_timer_create(&timer_args, &sensorUploadTimer);
+  esp_timer_start_periodic(sensorUploadTimer, 10 * 1000000ULL);  // 10초 (마이크로초 단위)
+}
+
+void SensorManager::stopUploadTimer() {
+  if (sensorUploadTimer != NULL) {
+    esp_timer_stop(sensorUploadTimer);
+    esp_timer_delete(sensorUploadTimer);
+    sensorUploadTimer = NULL;
+  }
+}
+
+void SensorManager::processUpload() {
+  if (!shouldUploadSensorData) {
+    return;  // 업로드 플래그가 설정되지 않음
+  }
+  
+  if (WiFi.status() != WL_CONNECTED) {
+    shouldUploadSensorData = false;  // WiFi 미연결 시 플래그 리셋
+    return;
+  }
+  
+  shouldUploadSensorData = false;  // 플래그 리셋
+  
+  // 최신 센서 데이터 읽기
+  if (!readData()) {
+    return;  // 센서 읽기 실패
+  }
+  
+  HTTPClient http;
+  http.begin(serverURL);
+  http.addHeader("Content-Type", "application/json");
+  
+  // Device ID 가져오기
+  String deviceIdentifier = deviceID->getID();
+  
+  // JSON 페이로드 생성
+  String payload = "{";
+  payload += "\"temperature\":";
+  payload += String(lastTemperature, 2);
+  payload += ",\"humidity\":";
+  payload += String(lastHumidity, 2);
+  payload += ",\"device_id\":\"";
+  payload += deviceIdentifier;
+  payload += "\"";
+  payload += "}";
+  
+  int httpCode = http.POST(payload);
+  
+  if (httpCode > 0 && httpCode < 300) {
+    // 성공 (로그는 생략, 필요시 추가 가능)
+  }
+  
+  http.end();
+}
+
+// 정적 타이머 콜백 함수 (ISR에서 호출됨)
+void IRAM_ATTR SensorManager::timerCallback(void* arg) {
+  // ISR에서는 플래그만 설정 (HTTP 요청은 시간이 걸리므로 loop()에서 처리)
+  if (sensorManagerInstance != nullptr) {
+    sensorManagerInstance->shouldUploadSensorData = true;
+  }
+}
+
