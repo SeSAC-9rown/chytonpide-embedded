@@ -7,6 +7,15 @@
 #include "ButtonHandler.h"
 #include "DeviceID.h"
 #include "RoboEyesTFT_eSPI.h"
+#include "SensorManager.h"
+#include "RelayLedController.h"
+#include "FaceEmotionController.h"
+
+// 주기 설정 (밀리초)
+const uint32_t SENSOR_READ_INTERVAL_MS = 10000;      // 10초마다 센서 데이터 읽기
+const uint32_t SENSOR_UPLOAD_INTERVAL_MS = 30000;  // 30초마다 센서 데이터 업로드
+const uint32_t LED_CHECK_INTERVAL_MS = 1000;        // 1초마다 LED 상태 확인
+const uint32_t FACE_EMOTION_CHECK_INTERVAL_MS = 2000;  // 2초마다 Face Emotion 상태 확인
 
 WiFiManager wifiManager;
 TFT_eSPI tft = TFT_eSPI();
@@ -16,6 +25,24 @@ TFT_RoboEyes roboEyes(tft, false, 3);  // landscape, rotation 3 (TFT-LCD.ino와 
 WifiState currentState = WIFI_CONNECTING;
 WifiState lastDisplayedState = WIFI_ERROR;
 bool bootButtonPressed = false;
+
+// 서버 URL 및 엔드포인트
+const char* SERVER_BASE_URL = "https://chytonpide.azurewebsites.net";
+const char* SENSOR_ENDPOINT = "/sensor_data";
+const char* LED_STATE_ENDPOINT = "/devices";  // /devices/:serial/led
+const char* FACE_EMOTION_ENDPOINT = "/devices";  // /devices/:serial/lcd
+
+// 프로토타입 고정 시리얼 ID
+const char* PROTOTYPE_SERIAL_ID = "xJN2wsF850yqWQfBUkGP";
+
+// 센서/LED/Face Emotion 컨트롤러
+SensorManager sensorManager(SERVER_BASE_URL, SENSOR_ENDPOINT, &deviceID);
+RelayLedController relayLedController(SERVER_BASE_URL, LED_STATE_ENDPOINT, &deviceID);
+FaceEmotionController faceEmotionController(SERVER_BASE_URL, FACE_EMOTION_ENDPOINT, &deviceID, &roboEyes);
+
+// 릴레이 핀 (테스트/프로토타입용)
+const uint8_t RELAY_SIGNAL_PIN = 48;
+const uint8_t RELAY_COM_PIN = 47;
 
 // 설정 포털 타임아웃 (초)
 const int CONFIG_PORTAL_TIMEOUT = 300;  // 5분
@@ -30,10 +57,30 @@ IPAddress gateway(192, 168, 4, 1);
 IPAddress subnet(255, 255, 255, 0);
 
 void setup() {
+  Serial.begin(115200);
+  delay(100);
+  
+  // 프로토타입 고정 시리얼 ID 설정 (가장 먼저 설정)
+  // 기존 ID가 있으면 먼저 삭제
+  deviceID.clearCustomID();
+  delay(50);
+  
+  // 새 ID 설정
+  deviceID.setCustomID(PROTOTYPE_SERIAL_ID);
+  
   // LCD 초기화
   initLCD();
   printLCD(10, 100, "Initializing...", TFT_WHITE, 2);
   delay(500);
+
+  // 센서/릴레이 모듈 초기화
+  if (sensorManager.init()) {
+    sensorManager.setSensorReadIntervalMs(SENSOR_READ_INTERVAL_MS);
+    sensorManager.setUploadIntervalMs(SENSOR_UPLOAD_INTERVAL_MS);
+  }
+  relayLedController.begin(RELAY_SIGNAL_PIN, RELAY_COM_PIN);
+  relayLedController.setCheckInterval(LED_CHECK_INTERVAL_MS);
+  faceEmotionController.setCheckInterval(FACE_EMOTION_CHECK_INTERVAL_MS);
 
   // GPIO 0 (BOOT 버튼) 설정
   pinMode(0, INPUT_PULLUP);
@@ -72,6 +119,11 @@ void setup() {
     // WiFi 연결 성공
     currentState = WIFI_CONNECTED;
     displayConnected();
+    
+    // 센서 데이터 업로드 타이머/릴레이 업데이트 시작
+    if (sensorManager.isInitialized()) {
+      sensorManager.startUploadTimer();
+    }
   }
 }
 
@@ -108,6 +160,16 @@ void loop() {
       }
     }
   }
+
+  // 센서 데이터 주기적 샘플링/업로드 처리
+  sensorManager.update();
+  sensorManager.processUpload();
+
+  // LED 상태 동기화
+  relayLedController.update();
+
+  // Face Emotion 상태 동기화
+  faceEmotionController.update();
 
   delay(10);  // CPU 부하 감소
 }
