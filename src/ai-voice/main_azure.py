@@ -84,6 +84,20 @@ except ImportError:
     HAS_AIY_AUDIO = False
     print("경고: AIY Projects audio 모듈을 찾을 수 없습니다.")
 
+# 오디오 유틸리티 import
+try:
+    # 현재 디렉토리 기준으로 시도
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    if current_dir not in sys.path:
+        sys.path.insert(0, current_dir)
+    from utils.audio_utils import play_intro_audio
+except ImportError:
+    logger.error("utils.audio_utils를 import할 수 없습니다.")
+    # 폴백 함수 정의
+    def play_intro_audio(*args, **kwargs):
+        logger.error("play_intro_audio 함수를 사용할 수 없습니다.")
+        return False
+
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
@@ -641,6 +655,7 @@ class VoiceAssistant:
             else:
                 self.board.led.state = Led.OFF
 
+
     def _contains_trigger_word(self, text):
         """텍스트에 트리거 단어가 포함되어 있는지 확인"""
         if not text:
@@ -744,10 +759,11 @@ class VoiceAssistant:
         logger.info("종료하려면 '종료'라고 말하거나 Ctrl+C를 누르세요.")
         logger.info("=" * 50)
 
-        # 시작 안내 음성 (Sleep mode)
-        main_trigger = self.trigger_words[0] if self.trigger_words else "치피"
-        self.tts.synthesize(
-            f"안녕하세요! 저는 {main_trigger}입니다. 트리거 단어를 말씀해주세요."
+        # 시작 안내 음성 (intro.wav 파일 재생)
+        play_intro_audio(
+            tts=self.tts,
+            trigger_words=self.trigger_words,
+            use_trigger_word=True
         )
 
         self.running = True

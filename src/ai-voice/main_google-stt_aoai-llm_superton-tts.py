@@ -519,6 +519,25 @@ def _run_servo_async():
     return thread
 
 
+# 오디오 유틸리티 import
+try:
+    from utils.audio_utils import play_intro_audio
+except ImportError:
+    # 상위 디렉토리에서 시도
+    try:
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        if current_dir not in sys.path:
+            sys.path.insert(0, current_dir)
+        from utils.audio_utils import play_intro_audio
+    except ImportError:
+        logger.error("utils.audio_utils를 import할 수 없습니다.")
+
+        # 폴백 함수 정의
+        def play_intro_audio(*args, **kwargs):
+            logger.error("play_intro_audio 함수를 사용할 수 없습니다.")
+            return False
+
+
 def _contains_servo_keywords(text):
     """서보 모터 실행 키워드 감지"""
     if not text:
@@ -731,20 +750,10 @@ def main():
             last_interaction_time = None
             last_response = ""  # 중복 응답 방지용
 
-            # 시작 안내 음성
-            if USE_TRIGGER_WORD:
-                main_trigger = trigger_words[0] if trigger_words else "치피"
-                tts.speak(
-                    f"안녕하세요! 저는 {main_trigger}입니다. 대화하고 싶을 때 저를 불러주세요.",
-                    language="ko",
-                    style="neutral",
-                )
-            else:
-                tts.speak(
-                    "안녕하세요! 저는 치피입니다. 말씀해주세요.",
-                    language="ko",
-                    style="neutral",
-                )
+            # 시작 안내 음성 (intro.wav 파일 재생)
+            play_intro_audio(
+                tts=tts, trigger_words=trigger_words, use_trigger_word=USE_TRIGGER_WORD
+            )
 
             # 슬픈 톤을 사용할 키워드 목록 (constants에서 가져옴)
             sad_keywords = SAD_TONE_KEYWORDS

@@ -657,6 +657,24 @@ except ImportError:
             sys.exit(1)
 
 
+# 오디오 유틸리티 import
+try:
+    from utils.audio_utils import play_intro_audio
+except ImportError:
+    # 상위 디렉토리에서 시도
+    try:
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        if current_dir not in sys.path:
+            sys.path.insert(0, current_dir)
+        from utils.audio_utils import play_intro_audio
+    except ImportError:
+        logger.error("utils.audio_utils를 import할 수 없습니다.")
+        # 폴백 함수 정의
+        def play_intro_audio(*args, **kwargs):
+            logger.error("play_intro_audio 함수를 사용할 수 없습니다.")
+            return False
+
+
 def _contains_trigger_word(text, trigger_words):
     """텍스트에 트리거 단어가 포함되어 있는지 확인"""
     if not text or not trigger_words:
@@ -747,13 +765,8 @@ def main():
         last_interaction_time = None
         last_response = ""  # 중복 응답 방지용
 
-        # 시작 안내 음성 (Sleep mode)
-        main_trigger = trigger_words[0] if trigger_words else "치피"
-        tts.speak(
-            f"안녕하세요! 저는 {main_trigger}입니다. 대화하고 싶을 때 저를 불러주세요.",
-            language="ko",
-            style="neutral",
-        )
+        # 시작 안내 음성 (intro.wav 파일 재생)
+        play_intro_audio(tts=tts, trigger_words=trigger_words)
 
         # 슬픈 톤을 사용할 키워드 목록
         sad_keywords = [
