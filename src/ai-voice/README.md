@@ -210,6 +210,8 @@ self.conn = psycopg2.connect(
 pip3 install -r requirements.txt
 ```
 
+-   [libpq-dev 설치 방법](https://www.notion.so/2bb9b91d60ce803eb378d7f7e3d779d8)
+
 ### 환경 변수 설정
 
 `config/env.example` 파일을 참고해 `config/.env` 파일을 생성

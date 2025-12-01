@@ -14,8 +14,8 @@ openai>=0.28.0,<1.0.0         # Azure OpenAI API (Python 3.7 호환)
 
 # Speech & Audio
 # azure-cognitiveservices-speech는 Python 3.7에서도 동작하지만 버전 확인 필요
-azure-cognitiveservices-speech>=1.20.0,<2.0.0  # Azure Speech SDK (STT/TTS)
-pygame>=2.0.0,<3.0.0          # 음성 재생 (Python 3.7 호환)
+# azure-cognitiveservices-speech>=1.20.0,<2.0.0  # Azure Speech SDK (STT/TTS)
+# pygame>=2.0.0,<3.0.0          # 음성 재생 (Python 3.7 호환)
 
 # Database
 psycopg2-binary>=2.8.0,<3.0.0  # PostgreSQL 드라이버 (Python 3.7 호환)
