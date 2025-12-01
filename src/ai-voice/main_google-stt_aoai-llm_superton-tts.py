@@ -12,7 +12,9 @@ import io
 import json
 import logging
 import os
+import subprocess
 import sys
+import threading
 import time
 
 # 한글 출력 깨짐 방지 (Python 3.7.3 호환)
@@ -100,6 +102,12 @@ SLEEP_TIMEOUT = float(os.environ.get("SLEEP_TIMEOUT", "10.0"))
 
 # Google Cloud Speech 언어 코드
 GOOGLE_SPEECH_LANGUAGE = os.environ.get("GOOGLE_SPEECH_LANGUAGE", "ko_KR")
+
+# 얼굴 표정 제어 설정
+DEVICE_SERIAL = os.environ.get("DEVICE_SERIAL")
+SERVER_URL = os.environ.get(
+    "SERVER_URL", "https://chytonpide.azurewebsites.net"
+)  # 기본값: 프로덕션 서버 URL
 
 # 검증
 if not SUPERTON_API_KEY or not SUPERTON_VOICE_ID:
@@ -304,6 +312,36 @@ except ImportError:
             print(f"❌ ChipiBrain을 import할 수 없습니다: {e}")
             sys.exit(1)
 
+# 상수 import
+try:
+    from constants import (
+        EMOTION_CHECK_ORDER,
+        EMOTION_DEFAULT,
+        EMOTION_KEYWORDS,
+        EXIT_COMMANDS,
+        LED_OFF_KEYWORDS,
+        LED_ON_KEYWORDS,
+        SAD_TONE_KEYWORDS,
+        SERVO_KEYWORDS,
+        SLEEP_COMMANDS,
+    )
+except ImportError:
+    # 현재 디렉토리 기준으로 시도
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    if current_dir not in sys.path:
+        sys.path.insert(0, current_dir)
+    from constants import (
+        EMOTION_CHECK_ORDER,
+        EMOTION_DEFAULT,
+        EMOTION_KEYWORDS,
+        EXIT_COMMANDS,
+        LED_OFF_KEYWORDS,
+        LED_ON_KEYWORDS,
+        SAD_TONE_KEYWORDS,
+        SERVO_KEYWORDS,
+        SLEEP_COMMANDS,
+    )
+
 
 def load_voice_hints():
     """voice_hints.json 파일에서 자주 사용하는 문장 로드"""
@@ -397,6 +435,213 @@ def _contains_trigger_word(text, trigger_words):
                 return True
 
     return False
+
+
+def _find_servo_script_path():
+    """서보 스크립트 경로 찾기"""
+    # 현재 파일의 디렉토리 기준으로 경로 찾기
+    main_file_dir = os.path.dirname(os.path.abspath(__file__))
+    main_file_parent = os.path.dirname(main_file_dir)
+
+    # 여러 가능한 경로 시도
+    possible_paths = [
+        # 현재 디렉토리 기준 (src/ai-voice/servo/examples/plant_shaker.py)
+        os.path.join(main_file_dir, "servo", "examples", "plant_shaker.py"),
+        # 상위 디렉토리 기준
+        os.path.join(main_file_parent, "servo", "examples", "plant_shaker.py"),
+        # 홈 디렉토리 기준 (~/chytonpide/servo/examples/plant_shaker.py)
+        os.path.expanduser("~/chytonpide/servo/examples/plant_shaker.py"),
+        # 절대 경로 (라즈베리파이 기본 경로)
+        "/home/pi/chytonpide/servo/examples/plant_shaker.py",
+    ]
+
+    for path in possible_paths:
+        abs_path = os.path.abspath(os.path.expanduser(path))
+        if os.path.exists(abs_path):
+            logger.info(f"서보 스크립트 경로 찾음: {abs_path}")
+            return abs_path
+
+    logger.warning("서보 스크립트를 찾을 수 없습니다. 가능한 경로:")
+    for path in possible_paths:
+        logger.warning(f"  - {os.path.abspath(os.path.expanduser(path))}")
+    return None
+
+
+def _run_servo_plant_shake():
+    """서보 모터로 화분 흔들기 실행 (subprocess 사용)"""
+    script_path = _find_servo_script_path()
+    if not script_path:
+        logger.error("서보 스크립트를 찾을 수 없습니다.")
+        return False
+
+    try:
+        logger.info(f"서보 모터 실행: {script_path}")
+        # sudo 권한으로 실행
+        result = subprocess.run(
+            ["sudo", "python3", script_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,  # 최대 30초 대기
+            text=True,
+        )
+
+        if result.returncode == 0:
+            logger.info("서보 모터 실행 완료")
+            if result.stdout:
+                logger.debug(f"서보 출력: {result.stdout}")
+            return True
+        else:
+            logger.error(f"서보 모터 실행 실패 (코드: {result.returncode})")
+            if result.stderr:
+                logger.error(f"서보 오류: {result.stderr}")
+            return False
+
+    except subprocess.TimeoutExpired:
+        logger.error("서보 모터 실행 시간 초과 (30초)")
+        return False
+    except Exception as e:
+        logger.error(f"서보 모터 실행 오류: {e}", exc_info=True)
+        return False
+
+
+def _run_servo_async():
+    """서보 모터를 비동기로 실행 (별도 스레드에서)"""
+
+    def _servo_worker():
+        try:
+            _run_servo_plant_shake()
+        except Exception as e:
+            logger.error(f"서보 모터 비동기 실행 오류: {e}")
+
+    thread = threading.Thread(target=_servo_worker, daemon=True)
+    thread.start()
+    logger.info("서보 모터 비동기 실행 시작")
+    return thread
+
+
+def _contains_servo_keywords(text):
+    """서보 모터 실행 키워드 감지"""
+    if not text:
+        return False
+
+    text_lower = text.lower()
+    return any(keyword in text_lower for keyword in SERVO_KEYWORDS)
+
+
+def _detect_face_emotion_from_response(text):
+    """
+    LLM 응답 텍스트를 분석하여 적절한 얼굴 표정 감지 (키워드 기반)
+
+    Args:
+        text: LLM 응답 텍스트
+
+    Returns:
+        str: 감정 상수 ("HAPPY", "SAD", "ANGRY", "SURPRISED", "TIRED", "CALM", "DEFAULT")
+    """
+    if not text:
+        return EMOTION_DEFAULT
+
+    text_lower = text.lower()
+
+    # 우선순위대로 감정 체크
+    for emotion in EMOTION_CHECK_ORDER:
+        keywords = EMOTION_KEYWORDS.get(emotion, [])
+        if any(keyword in text_lower for keyword in keywords):
+            logger.debug(f"감정 감지: {emotion} (키워드 매칭)")
+            return emotion
+
+    # 키워드가 없으면 기본값 (NEUTRAL/DEFAULT)
+    return EMOTION_DEFAULT
+
+
+def _set_face_emotion(emotion, serial=None, server_url=None):
+    """
+    얼굴 표정 설정
+
+    Args:
+        emotion: 감정 상수 ("HAPPY", "SAD", "ANGRY", "SURPRISED", "TIRED", "CALM", "DEFAULT")
+        serial: 디바이스 시리얼 (기본값: 환경 변수 DEVICE_SERIAL)
+        server_url: 서버 URL (기본값: 환경 변수 SERVER_URL)
+
+    Returns:
+        bool: 성공 여부
+    """
+    device_serial = serial or DEVICE_SERIAL
+    if not device_serial:
+        logger.warning("DEVICE_SERIAL이 설정되지 않아 얼굴 표정을 설정할 수 없습니다.")
+        return False
+
+    url = f"{server_url or SERVER_URL}/devices/{device_serial}"
+    # API 명세: lcd_face 필드만 보내면 됨
+    payload = {"lcd_face": emotion}
+
+    try:
+        # Content-Type: application/x-www-form-urlencoded (기본값)
+        response = requests.patch(url, data=payload, timeout=5)
+        response.raise_for_status()
+
+        logger.info(f"얼굴 표정 설정 성공: {emotion}")
+        return True
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"얼굴 표정 설정 실패 ({emotion}): {e}")
+        return False
+
+
+def _contains_led_keywords(text):
+    """LED 제어 키워드 감지
+
+    Returns:
+        str or None: "on", "off", 또는 None
+    """
+    if not text:
+        return None
+
+    text_lower = text.lower()
+
+    # LED 켜기 키워드 확인
+    if any(keyword in text_lower for keyword in LED_ON_KEYWORDS):
+        return "on"
+
+    # LED 끄기 키워드 확인
+    if any(keyword in text_lower for keyword in LED_OFF_KEYWORDS):
+        return "off"
+
+    return None
+
+
+def _set_led_state(led_on, serial=None, server_url=None):
+    """
+    LED 상태 설정
+
+    Args:
+        led_on: True면 켜기, False면 끄기
+        serial: 디바이스 시리얼 (기본값: 환경 변수 DEVICE_SERIAL)
+        server_url: 서버 URL (기본값: 환경 변수 SERVER_URL)
+
+    Returns:
+        bool: 성공 여부
+    """
+    device_serial = serial or DEVICE_SERIAL
+    if not device_serial:
+        logger.warning("DEVICE_SERIAL이 설정되지 않아 LED를 제어할 수 없습니다.")
+        return False
+
+    url = f"{server_url or SERVER_URL}/devices/{device_serial}"
+    # API 명세: is_led_on 필드만 보내면 됨 (문자열로 "true" 또는 "false")
+    payload = {"is_led_on": "true" if led_on else "false"}
+
+    try:
+        # Content-Type: application/x-www-form-urlencoded (기본값)
+        response = requests.patch(url, data=payload, timeout=5)
+        response.raise_for_status()
+
+        state_str = "켜기" if led_on else "끄기"
+        logger.info(f"LED {state_str} 성공")
+        return True
+    except requests.exceptions.RequestException as e:
+        state_str = "켜기" if led_on else "끄기"
+        logger.warning(f"LED {state_str} 실패: {e}")
+        return False
 
 
 def main():
@@ -501,16 +746,8 @@ def main():
                     style="neutral",
                 )
 
-            # 슬픈 톤을 사용할 키워드 목록
-            sad_keywords = [
-                "죽고",
-                "자살",
-                "끝내고",
-                "절망",
-                "극도로 힘들",
-                "살기싫",
-                "뛰어내리",
-            ]
+            # 슬픈 톤을 사용할 키워드 목록 (constants에서 가져옴)
+            sad_keywords = SAD_TONE_KEYWORDS
 
             # Main loop
             while True:
@@ -580,23 +817,41 @@ def main():
                         last_interaction_time = time.time()
 
                     # 종료 명령 확인
-                    if any(
-                        cmd in user_text.lower()
-                        for cmd in ["종료", "끝내", "그만", "exit", "quit"]
-                    ):
+                    if any(cmd in user_text.lower() for cmd in EXIT_COMMANDS):
                         logger.info("종료 명령을 받았습니다.")
                         tts.speak("안녕히 가세요!", language="ko", style="neutral")
                         break
 
                     # Sleep 명령 확인 (Sleep mode로 전환)
-                    if any(
-                        cmd in user_text.lower()
-                        for cmd in ["잘자", "sleep", "휴식", "쉬어"]
-                    ):
+                    if any(cmd in user_text.lower() for cmd in SLEEP_COMMANDS):
                         logger.info("Sleep mode로 전환합니다.")
                         sleep_mode = True
                         last_interaction_time = None
                         continue
+
+                    # 서보 모터 실행 키워드 감지
+                    if _contains_servo_keywords(user_text):
+                        logger.info("서보 모터 실행 키워드 감지!")
+                        print("🔄 서보 모터 실행 중...", flush=True)
+                        # 비동기로 실행 (서보 실행과 동시에 AI 응답도 처리 가능)
+                        _run_servo_async()
+                        print("✅ 서보 모터 실행 시작 (백그라운드)", flush=True)
+
+                    # LED 제어 키워드 감지
+                    led_action = _contains_led_keywords(user_text)
+                    if led_action:
+                        logger.info(f"LED {led_action.upper()} 키워드 감지!")
+                        print(f"💡 LED {led_action.upper()} 중...", flush=True)
+                        # 비동기로 LED 제어 (다른 작업과 동시에 실행 가능)
+                        led_state = led_action == "on"
+                        threading.Thread(
+                            target=lambda: _set_led_state(led_state),
+                            daemon=True,
+                        ).start()
+                        print(
+                            f"✅ LED {led_action.upper()} 요청 완료 (백그라운드)",
+                            flush=True,
+                        )
 
                     # 슬픈 톤 키워드 감지
                     is_sad_topic = any(keyword in user_text for keyword in sad_keywords)
@@ -633,12 +888,26 @@ def main():
                     if not sleep_mode:
                         last_interaction_time = time.time()
 
+                    # 얼굴 표정 감지 및 설정 (키워드 기반)
+                    detected_emotion = _detect_face_emotion_from_response(ai_response)
+                    print(f"😊 감지된 표정: {detected_emotion}", flush=True)
+                    # 비동기로 얼굴 표정 설정 (TTS와 동시에 실행)
+                    if DEVICE_SERIAL:
+                        threading.Thread(
+                            target=lambda: _set_face_emotion(detected_emotion),
+                            daemon=True,
+                        ).start()
+
                     # 슬픈 키워드가 있으면 슬픈 톤으로, 없으면 중립 톤으로 재생
                     response_style = "sad" if is_sad_topic else "neutral"
                     pitch_shift = -10 if is_sad_topic else 0
                     print(
                         f"🎤 응답 톤: {response_style}, 피치: {pitch_shift}", flush=True
                     )
+
+                    # TTS 재생과 동시에 서보 모터 실행 (비동기)
+                    _run_servo_async()
+
                     tts.speak(
                         ai_response,
                         language="ko",
