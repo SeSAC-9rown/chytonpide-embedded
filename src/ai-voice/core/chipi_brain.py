@@ -256,6 +256,54 @@ class ChipiBrain:
         ):
             special_context += "## 특별 상황: user가 물을 주려고 해!\n감사를 표현하고 user의 건강을 먼저 생각해줘. 다양하게 응답해.\n"
 
+        # 아침 인사/잘잤어 질문 감지
+        if any(
+            k in last_user_msg
+            for k in [
+                "잘잤어",
+                "잘 잤어",
+                "잘자",
+                "잘 잤니",
+                "아침이야",
+                "좋은 아침",
+                "안녕",
+                "일어났어",
+            ]
+        ):
+            special_context += "## 특별 상황: user가 아침 인사를 하고 있어!\n좋은 아침 인사를 하고, 물을 준 것에 감사하며, 컨디션이 좋다고 말하고 응원해줘. 예: '좋은 아침! 어제 물 줘서 오늘 컨디션 최고야. 오늘도 힘내!' 이런 식으로 응답해.\n"
+
+        # 잘 있었는지 질문 감지
+        if any(
+            k in last_user_msg
+            for k in [
+                "잘 있었어",
+                "잘 지냈어",
+                "어떻게 지냈어",
+                "뭐했어",
+                "어디갔어",
+                "다녀왔어",
+            ]
+        ):
+            special_context += "## 특별 상황: user가 잘 있었는지 물어봤어!\n반가움을 표현하고 보고 싶었다는 감정을 자연스럽게 말해줘. 예: '잘 다녀왔어? 너무 보고 싶었어~' 이런 식으로 응답해.\n"
+
+        # 힘들다는 표현 감지 (짧게 공감)
+        if any(
+            k in last_user_msg
+            for k in ["힘들어", "힘들", "어려워", "막막해", "지쳐", "피곤"]
+        ) and not any(
+            k in last_user_msg
+            for k in [
+                "죽고",
+                "자살",
+                "끝내고",
+                "절망",
+                "극도로 힘들",
+                "살기싫",
+                "뛰어내리",
+            ]
+        ):
+            special_context += "## 특별 상황: user가 힘들다고 말하고 있어!\n짧게 공감해줘. 예: '요즘 많이 힘들구나..' 이런 식으로 간단하게 공감 표현해.\n"
+
         # 온습도 관련 키워드 감지
         has_temp_keyword = any(
             k in last_user_msg for k in ["온도", "따뜻", "더워", "추워"]
@@ -325,26 +373,7 @@ class ChipiBrain:
         # 2. DB 컨텍스트 추가 (device_serial이 있을 경우)
         db_context = ""
         if device_serial and self.db_manager:
-            # 온도 또는 습도만 묻는지 확인 (이미 위에서 정의했으므로 재사용)
-            # 온습도 둘 다 묻는 경우는 only_temperature와 only_humidity 둘 다 False
-            ask_temp_only = (
-                has_temp_keyword
-                and not has_humidity_keyword
-                and not has_temp_humidity_keyword
-                and not has_status_keyword
-            )
-            ask_humidity_only = (
-                has_humidity_keyword
-                and not has_temp_keyword
-                and not has_temp_humidity_keyword
-                and not has_status_keyword
-            )
-
-            db_context, user_name = self.db_manager.build_context(
-                device_serial,
-                only_temperature=ask_temp_only,
-                only_humidity=ask_humidity_only,
-            )
+            db_context, user_name = self.db_manager.build_context(device_serial)
 
         # 최종 시스템 프롬프트 (DB 정보 포함)
         final_system_prompt = system_prompt
@@ -394,7 +423,8 @@ class ChipiBrain:
 
                 print("📥 API 응답 받음:")
                 print(f"   - choices 개수: {len(response.choices)}")
-                print(f"   - finish_reason: {response.choices[0].finish_reason}")
+                finish_reason = response.choices[0].finish_reason
+                print(f"   - finish_reason: {finish_reason}")
 
                 # 콘텐츠 필터 체크
                 if (
@@ -405,7 +435,12 @@ class ChipiBrain:
                         f"   - content_filter_results: {response.choices[0].content_filter_results}"
                     )
 
-                assistant_message = response.choices[0].message.content
+                # finish_reason이 content_filter인 경우 처리
+                if finish_reason == "content_filter":
+                    print("⚠️  콘텐츠 필터에 의해 응답이 차단되었습니다.")
+                    assistant_message = "어, 그건 제가 도와드리기 어려운 것 같아요. 다른 걸 말씀해 주실 수 있을까요?"
+                else:
+                    assistant_message = response.choices[0].message.content
             else:
                 # openai 0.28.x 버전
                 response = openai.ChatCompletion.create(
@@ -418,19 +453,35 @@ class ChipiBrain:
 
                 print("📥 API 응답 받음:")
                 print(f"   - choices 개수: {len(response['choices'])}")
-                print(f"   - finish_reason: {response['choices'][0]['finish_reason']}")
+                finish_reason = response["choices"][0]["finish_reason"]
+                print(f"   - finish_reason: {finish_reason}")
 
-                assistant_message = response["choices"][0]["message"]["content"]
+                # finish_reason이 content_filter인 경우 처리
+                if finish_reason == "content_filter":
+                    print("⚠️  콘텐츠 필터에 의해 응답이 차단되었습니다.")
+                    assistant_message = "어, 그건 제가 도와드리기 어려운 것 같아요. 다른 걸 말씀해 주실 수 있을까요?"
+                else:
+                    assistant_message = response["choices"][0]["message"]["content"]
 
             print(f"✓ 응답 메시지: {assistant_message}")
 
             # 응답이 None인 경우 처리
             if assistant_message is None:
                 print("⚠️  응답이 None입니다! (content 값이 비어있음)")
-                if response.choices[0].finish_reason == "content_filter":
-                    print("   → 원인: Azure 콘텐츠 필터 (안전 정책 위반)")
-                print(f"   전체 message 객체: {response.choices[0].message}")
-                assistant_message = "어, 지금은 잘 모르겠어. 잠시만 기다려줄래?"
+                # finish_reason 확인 (버전에 따라 다를 수 있음)
+                try:
+                    if HAS_AZURE_OPENAI_CLASS:
+                        current_finish_reason = response.choices[0].finish_reason
+                    else:
+                        current_finish_reason = response["choices"][0]["finish_reason"]
+
+                    if current_finish_reason == "content_filter":
+                        print("   → 원인: Azure 콘텐츠 필터 (안전 정책 위반)")
+                        assistant_message = "어, 그건 제가 도와드리기 어려운 것 같아요. 다른 걸 말씀해 주실 수 있을까요?"
+                    else:
+                        assistant_message = "어, 지금은 잘 모르겠어. 잠시만 기다려줄래?"
+                except:
+                    assistant_message = "어, 지금은 잘 모르겠어. 잠시만 기다려줄래?"
 
             # 응답 추가 및 저장
             self.messages.append({"role": "assistant", "content": assistant_message})
@@ -439,10 +490,21 @@ class ChipiBrain:
             return assistant_message
 
         except Exception as e:
+            error_str = str(e)
             error_msg = "어, 뭔가 잘못됐나봐. 잠시만 기다려줄래?"
-            print(f"❌ 응답 생성 오류: {e}")
-            print(f"❌ 최종 시스템 프롬프트:\n{final_system_prompt}\n")
-            print(f"❌ 메시지 목록:\n{self.messages}\n")
+
+            # 콘텐츠 필터 관련 에러 체크
+            if (
+                "content_filter" in error_str.lower()
+                or "content management policy" in error_str.lower()
+            ):
+                print(f"⚠️  콘텐츠 필터 에러: {e}")
+                error_msg = "어, 그건 제가 도와드리기 어려운 것 같아요. 다른 걸 말씀해 주실 수 있을까요?"
+            else:
+                print(f"❌ 응답 생성 오류: {e}")
+                print(f"❌ 최종 시스템 프롬프트:\n{final_system_prompt}\n")
+                print(f"❌ 메시지 목록:\n{self.messages}\n")
+
             import traceback
 
             traceback.print_exc()
