@@ -61,13 +61,11 @@
 
 <img width="2597" height="1539" alt="image" src="https://github.com/user-attachments/assets/f07029b9-7851-4a9f-b3bd-30e2f41d94f6" />
 
-
 ## 🤖 AI 음성 상호작용
 
 ### 음성 처리 파이프라인
 
-<img width="3043" height="1314" alt="image" src="https://github.com/user-attachments/assets/1d9de018-d91d-475b-8d8a-546cb585673d" />
-
+<img width="1521" height="657" alt="image" src="https://github.com/user-attachments/assets/30b6d013-d37d-49b7-bdb1-0962ab873513" />
 
 ### 주요 기능
 
