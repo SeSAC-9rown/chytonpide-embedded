@@ -1,3 +1,6 @@
+# Claude Code
+.claude/
+
 # Build directories
 test/**/build/
 build/
@@ -90,3 +93,11 @@ dmypy.json
 
 # Memory files
 memory.txt
+
+# GCP/Google credentials
+**/client_secret_*.json
+**/voice-kit-*.json
+**/*-service-account*.json
+
+# Broadcom firmware blobs (Raspberry Pi WiFi driver files)
+brcmfmac*
