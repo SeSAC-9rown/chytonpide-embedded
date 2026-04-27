@@ -93,22 +93,83 @@
 -   Wi-Fi가 끊기면 버퍼에 저장 후 연결 회복 시 묶어서 전송(batch)
 -   PostgreSQL 데이터베이스에 저장되어 AI 컨텍스트로 활용
 
+## 📡 네트워크 아키텍처 (HTTP → TCP Server-Push)
+
+초기 HTTP polling 구조에서 LCD 감정 애니메이션이 네트워크 요청 중에 주기적으로 끊기는 문제가 있었습니다.
+메인 루프에서 세 개의 컨트롤러가 각자 동기식 `HTTPClient` 호출을 직렬로 실행하는 동안 `roboEyes.update()`가 호출되지 못해 프레임이 스킵됐습니다.
+
+이를 해결하기 위해 **영구 TCP 연결 + 서버 푸시 모델**로 전환했습니다.
+
+### Before / After
+
+```
+HTTP (기존):
+  Device --(GET /devices/:serial/led, 매 1초)--> Server    (동기 요청, 블로킹)
+  Device --(GET /devices/:serial/lcd, 매 2초)--> Server    (동기 요청, 블로킹)
+  Device --(POST /sensor_data,       매 30초)--> Server    (동기 요청, 블로킹)
+  → 매 요청마다 TCP handshake + TLS + HTTP 파싱 + 소켓 종료
+
+TCP (개선):
+  Device --(hello, 1회)--> Server
+                          Server --(state_update, 변경 시만 push)--> Device
+  Device --(sensor_data, 매 30초)--> Server
+                          Server --(ping, 매 30초)--> Device --(pong)-->
+  → 단일 영구 연결, polling 제거
+```
+
+### 개선 사항
+
+| 항목 | Before (HTTP) | After (TCP) |
+| --- | --- | --- |
+| 디바이스당 분당 요청 수 | 90회 (LED 60 + LCD 30) | 2회 (sensor + ping) |
+| 연결 모델 | 매 요청마다 handshake/종료 | 영구 연결 1개 재사용 |
+| LED/LCD 상태 변경 반영 | polling 주기 대기 | 서버 push로 즉시 |
+| 메인 루프 HTTP 블로킹 | 요청 중 `loop()` 정지 | 제거 (비차단 `poll()`) |
+| LCD 애니메이션 끊김 | 발생 | 체감상 해소 (실기 확인) |
+
+> 정확한 블로킹 시간 · 프레임 드롭 수치는 아직 측정하지 않았습니다.
+> 시리얼 로그로 `micros()` 기반 실측을 추가할 예정 (후속 작업).
+
+### 핵심 설계 포인트
+
+-   **Polling → Push:** LED/LCD 상태는 디바이스가 물어볼 필요가 없으므로 서버가 변경 시점에만 push
+-   **비차단 수신:** `loop()`에서 `tcpClient.poll()`은 `client.available()` 체크 후 데이터 없으면 즉시 리턴
+-   **컨트롤러 역할 재정의:** `RelayLedController`, `FaceEmotionController`를 폴러에서 **액추에이터**로 전환
+-   **지수 백오프 재접속:** 1s → 2s → 4s → ... → 30s, WiFi 순단/서버 재시작에도 자동 복구
+-   **Keepalive:** 30초 주기 ping/pong, 60초 타임아웃으로 좀비 연결 정리
+-   **재접속 시 상태 동기화:** `hello_ack`에 현재 상태 포함 → 재접속 후 별도 조회 없이 하드웨어에 반영
+
+상세 설계 문서: [`src/firmware_tcp/README.md`](src/firmware_tcp/README.md), [`src/server_tcp/README.md`](src/server_tcp/README.md)
+
+> 기존 `src/firmware/`, `src/server/`는 비교/롤백을 위해 그대로 유지했습니다.
+
 ## 📁 프로젝트 구조
 
 ```
 chytonpide/
 ├── src/
-│   ├── firmware/              # ESP32-S3 펌웨어
+│   ├── firmware/              # ESP32-S3 펌웨어 (HTTP 기반, 레거시)
 │   │   ├── firmware.ino
 │   │   ├── SensorManager.h/cpp      # 센서 데이터 관리
 │   │   ├── RelayLedController.h/cpp # LED 제어
 │   │   ├── FaceEmotionController.h/cpp # 감정 제어
 │   │   ├── RoboEyesTFT_eSPI.h      # LCD 감정 표현
 │   │   └── ...
-│   ├── server/                 # Python Test용 서버 (FastAPI)
+│   ├── firmware_tcp/          # ESP32-S3 펌웨어 (TCP 기반, 현재)
+│   │   ├── firmware_tcp.ino
+│   │   ├── TcpDeviceClient.h/cpp    # TCP 공통 클라이언트 (비차단/재접속/keepalive)
+│   │   ├── SensorManager.h/cpp      # TCP 전송으로 전환
+│   │   ├── RelayLedController.h/cpp # 액추에이터로 전환
+│   │   ├── FaceEmotionController.h/cpp # 액추에이터로 전환
+│   │   └── README.md
+│   ├── server/                # Python Test용 서버 (FastAPI HTTP, 레거시)
 │   │   ├── main.py
 │   │   ├── API.md
 │   │   └── requirements.txt
+│   ├── server_tcp/            # Python TCP 서버 (asyncio, 현재)
+│   │   ├── main.py                  # newline-delimited JSON 프로토콜
+│   │   ├── set_device.py            # 제어 클라이언트 CLI
+│   │   └── README.md
 │   ├── ai-voice/               # Raspberry Pi 음성 처리
 │   │   ├── main_google-stt_aoai-llm_superton-tts.py
 │   │   ├── core/
@@ -153,6 +214,13 @@ chytonpide/
 -   물리적 피드백 (서보 모터 움직임)
 -   조명 제어 (식물등)
 
+### 5. 실시간 반응형 네트워크 (TCP Server-Push)
+
+-   단일 영구 TCP 연결 + newline-delimited JSON 프로토콜
+-   서버 상태 변경 시 디바이스에 즉시 push (polling 제거)
+-   메인 루프의 동기식 HTTP 블로킹 제거로 LCD 애니메이션 끊김 해소 (실기 확인)
+-   상세: [`📡 네트워크 아키텍처`](#-네트워크-아키텍처-http--tcp-server-push) 섹션
+
 ## 🔧 기술 스택
 
 ### ESP32-S3
@@ -160,7 +228,13 @@ chytonpide/
 -   **프레임워크**: Arduino Core for ESP32
 -   **센서**: SHT31 (I2C)
 -   **디스플레이**: ILI9341 TFT LCD (SPI)
--   **통신**: Wi-Fi, HTTP/REST API
+-   **통신**: Wi-Fi, **TCP (newline-delimited JSON, server-push)** — 기존 HTTP polling 구조에서 전환
+-   **주요 라이브러리**: TFT_eSPI 2.5.43, ArduinoJson 7.4.2, WiFiManager
+
+### Server (Test)
+
+-   **TCP 서버**: Python 3.7+ `asyncio.start_server()` (외부 의존성 0, stdlib만)
+-   **HTTP 서버 (레거시)**: FastAPI + uvicorn
 
 ### Raspberry Pi Zero WH
 
